@@ -99,3 +99,28 @@ enum KeySynth {
 
     static func tap(_ k: KeyStroke) { down(k); up(k) }
 }
+
+// MARK: - Display
+
+extension KeyStroke {
+    private static let glyphs: [String: String] = [
+        "cmd": "⌘", "command": "⌘", "shift": "⇧", "opt": "⌥", "option": "⌥",
+        "alt": "⌥", "ctrl": "⌃", "control": "⌃", "fn": "fn",
+        "tab": "⇥", "return": "↩", "enter": "↩", "escape": "⎋", "esc": "⎋",
+        "space": "␣", "delete": "⌫", "backspace": "⌫", "forwarddelete": "⌦",
+        "up": "↑", "down": "↓", "left": "←", "right": "→",
+        "uparrow": "↑", "downarrow": "↓", "leftarrow": "←", "rightarrow": "→",
+        "pageup": "⇞", "pagedown": "⇟", "home": "↖", "end": "↘",
+        "rightoption": "⌥R", "rightshift": "⇧R", "rightcontrol": "⌃R",
+        "capslock": "⇪",
+        "minus": "-", "equal": "=", "leftbracket": "[", "rightbracket": "]",
+        "backslash": "\\", "semicolon": ";", "quote": "'", "comma": ",",
+        "period": ".", "slash": "/", "grave": "`",
+    ]
+
+    /// "ctrl+tab" -> "⌃⇥",  "cmd+shift+p" -> "⌘⇧P"
+    static func prettify(_ s: String) -> String {
+        let parts = s.lowercased().split(separator: "+").map(String.init)
+        return parts.map { glyphs[$0] ?? $0.uppercased() }.joined()
+    }
+}

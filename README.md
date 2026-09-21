@@ -65,18 +65,72 @@ from System Settings → Bluetooth. It appears as a hex serial number, not as
 > Pairing the remote to a Mac **unpairs it from your Apple TV.**
 
 ```sh
-./build.sh
-open SiriRemoted.app
+./build.sh install      # builds, signs, copies to /Applications
+open -a SiriRemoted
 ```
 
-Grant Accessibility (and Input Monitoring if prompted) when asked, then launch again.
-The `.app` wrapper is not cosmetic: TCC keys off a stable code-signing identity, so a
-bare binary would re-prompt and would attach the permission to whichever terminal
-launched it.
+It is a menu-bar app (no Dock icon). A permissions window lists what it still
+needs — Accessibility and Input Monitoring — with a button for each, and carries on
+by itself once both are granted; no relaunch.
 
-Logs go to `~/Library/Logs/siriremoted.log`.
+The `.app` wrapper is not cosmetic: TCC keys off the code-signing identity. An
+ad-hoc signature is identified by its cdhash, which changes on every build, so macOS
+silently drops the grants after each rebuild while still showing them as enabled.
+`build.sh` signs with a local identity named `SiriRemoted Self-Signed` when one
+exists in your keychain, which keeps grants across rebuilds; otherwise it falls back
+to ad-hoc and you re-grant after rebuilding.
 
-To stop and restore stock remote behaviour: `pkill -f siriremoted`.
+Logs go to `~/Library/Logs/siriremoted.log`. Quitting from the menu (or
+`pkill -f siriremoted`) releases any held key and restores the remote to stock.
+
+## Settings
+
+The menu bar icon → **设置…** opens a window with three tabs:
+
+- **按键** — the twelve buttons; for each, pick what tap / double / triple / hold /
+  longer hold / while-held do, by recording a keystroke or choosing a layer or
+  target action. Each button can also play a sound when it fires.
+- **时间与通用** — tap and hold timing, leader timeout, and which sound plays for
+  leader armed / leader expired / layer switch (any system sound, or files you drop
+  into `~/Library/Sounds`).
+- **多电脑** — multi-Mac relay, below.
+
+Saving from the window rewrites the config as plain JSON, so hand-written comments
+are lost; hand edits to the file still hot-reload.
+
+## Leader key
+
+Holding one button while pressing another is impossible one-thumbed — both are on
+the top face. A **leader** (one-shot layer) avoids that: tap it, and the *next*
+press resolves in the leader layer, then it disarms. If nothing follows within
+`oneShotTimeoutMs` it expires. Each leader covers exactly one action, and every tap
+re-arms it with a fresh timer.
+
+```jsonc
+"tv": { "tap": "layerOneShot:leader" }
+```
+
+## Multiple Macs
+
+One remote can drive several Macs on the same network. The Mac the remote is paired
+with is the **host**; the others run SiriRemoted as **receivers**. The host runs the
+gesture engine and forwards only the resulting key presses, so the keymap lives in one
+place. Switching is a key action — `"target:next"`, `"target:prev"`, `"target:local"`
+or `"target:<name>"` — and the host speaks the name of the Mac it switched to.
+
+- Receivers advertise themselves over Bonjour; the host finds them with no
+  addresses to type in. No server, no Tailscale on a shared LAN.
+- **Every connection is TLS with a pre-shared key derived from a passcode.** A
+  receiver types whatever it is sent, so without this anyone on the same Wi-Fi could
+  drive the Mac. A wrong passcode stalls the handshake; the host gives up after 5s
+  and reports it as a likely passcode mismatch.
+- A key held on a receiver (push-to-talk) is released if the connection drops, if
+  the host goes quiet for 6s, or when the host switches away.
+- Receivers need only Accessibility; they never read the remote.
+
+Set up on each Mac under 设置 › 多电脑: pick a role, a short name, and the same
+passcode everywhere. Built on another Mac, the app is not signed by an identity that
+Mac trusts, so open it the first time with right-click → Open.
 
 ## Configuration
 

@@ -2,7 +2,7 @@ import Foundation
 
 /// A binding may be written as a bare string ("up") or as an object with
 /// per-gesture actions ({"tap":"up","double":"cmd+up","repeat":true}).
-struct Binding: Decodable {
+struct ButtonBinding: Decodable {
     var tap: String?
     var double: String?
     var triple: String?
@@ -12,9 +12,11 @@ struct Binding: Decodable {
     /// what Wispr push-to-talk needs, and it bypasses tap/hold entirely.
     var whileHeld: String?
     var autoRepeat: Bool?
+    /// Played when this button's action fires (not on every auto-repeat).
+    var sound: String?
 
-    private enum CodingKeys: String, CodingKey {
-        case tap, double, triple, hold, hold2, whileHeld
+    enum CodingKeys: String, CodingKey {
+        case tap, double, triple, hold, hold2, whileHeld, sound
         case autoRepeat = "repeat"
     }
 
@@ -31,6 +33,7 @@ struct Binding: Decodable {
         hold2      = try c.decodeIfPresent(String.self, forKey: .hold2)
         whileHeld  = try c.decodeIfPresent(String.self, forKey: .whileHeld)
         autoRepeat = try c.decodeIfPresent(Bool.self,   forKey: .autoRepeat)
+        sound      = try c.decodeIfPresent(String.self, forKey: .sound)
     }
 
     /// Whether resolving a tap must wait to see if another tap follows.
@@ -51,7 +54,10 @@ struct Layer: Decodable {
     /// Buttons this layer leaves undefined fall back to layer 0. Set false to
     /// make the layer fully self-contained.
     var fallthroughToBase: Bool?
-    var bindings: [String: Binding]
+    /// Leader layers are entered deliberately, never by cycling through layers,
+    /// so "layer:next" steps over them.
+    var skipInCycle: Bool?
+    var bindings: [String: ButtonBinding]
 }
 
 struct Settings: Decodable {
@@ -64,6 +70,12 @@ struct Settings: Decodable {
     /// Safety net: never hold a synthetic key longer than this, so a crash or a
     /// dropped Bluetooth packet can't wedge a modifier down forever.
     var maxHeldKeySeconds: Double?
+    /// How long a one-shot (leader) layer stays armed waiting for the next press.
+    var oneShotTimeoutMs: Int?
+    /// System sound names (see /System/Library/Sounds), or "none".
+    var leaderArmedSound: String?
+    var leaderExpiredSound: String?
+    var layerSwitchSound: String?
 
     var doubleTapWindow: TimeInterval { Double(doubleTapWindowMs ?? 280) / 1000 }
     var holdThreshold:   TimeInterval { Double(holdThresholdMs ?? 350) / 1000 }
@@ -72,6 +84,10 @@ struct Settings: Decodable {
     var repeatInterval:  TimeInterval { Double(repeatIntervalMs ?? 60) / 1000 }
     var soundOnLayer:    Bool         { layerChangeSound ?? true }
     var maxHeldKey:      TimeInterval { maxHeldKeySeconds ?? 120 }
+    var oneShotTimeout:  TimeInterval { Double(oneShotTimeoutMs ?? 1500) / 1000 }
+    var armedSound:      String       { leaderArmedSound ?? "Tink" }
+    var expiredSound:    String       { leaderExpiredSound ?? "Purr" }
+    var switchSound:     String       { layerSwitchSound ?? "Morse" }
 }
 
 struct Config: Decodable {

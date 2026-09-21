@@ -3,6 +3,7 @@ private/
 
 # Build output
 bin/
+build/
 SiriRemoted.app/
 probe/hidprobe
 probe/seizetest

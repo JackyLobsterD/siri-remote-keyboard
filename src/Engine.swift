@@ -8,8 +8,11 @@ private final class ButtonState {
     var repeatTimer: Timer?
     var holdFired = false
     var heldKey: KeyStroke?
+    /// Which Mac the held key went down on (nil = this one), so it is released there.
+    var heldTarget: String?
     var heldKeyGuard: Timer?
     var momentaryLayer: Int?
+    var activeBinding: ButtonBinding?
 
     func cancelTimers() {
         resolveTimer?.invalidate(); resolveTimer = nil
@@ -22,6 +25,21 @@ final class Engine {
     private var config: Config
     private var layerIndex = 0
     private var states: [Button: ButtonState] = [:]
+
+    /// Fired when the active layer changes, so the menu bar can follow along.
+    var onLayerChange: (() -> Void)?
+
+    /// "target:next" and friends — which Mac the remote drives. Handled by the
+    /// relay host; a no-op when relaying is off.
+    var onTargetAction: ((String) -> Void)?
+
+    var soundsEnabled: Bool { config.s.soundOnLayer }
+
+    /// A one-shot ("leader") layer: armed by one button, consumed by the next
+    /// press, and dropped if nothing follows in time. Unlike a momentary layer
+    /// it needs no key held down, so it works one-handed with a thumb.
+    private var oneShotLayer: Int?
+    private var oneShotTimer: Timer?
 
     init(config: Config) {
         self.config = config
@@ -44,10 +62,33 @@ final class Engine {
         for b in Button.allCases {
             if let m = states[b]?.momentaryLayer { return m }
         }
-        return layerIndex
+        return oneShotLayer ?? layerIndex
     }
 
-    private func binding(for b: Button) -> Binding? {
+    var isLeaderArmed: Bool { oneShotLayer != nil }
+
+    private func armOneShot(_ i: Int) {
+        oneShotTimer?.invalidate()
+        oneShotLayer = i
+        oneShotTimer = Timer.scheduledTimer(
+            withTimeInterval: config.s.oneShotTimeout, repeats: false) { [weak self] _ in
+            guard let self, self.oneShotLayer != nil else { return }
+            self.oneShotLayer = nil
+            self.log("leader timed out")
+            self.announce(.leaderExpired)
+        }
+        log("leader armed -> \(currentLayerName)")
+        announce(.leaderArmed)
+    }
+
+    /// Any press other than the one that armed it spends the leader.
+    private func consumeOneShot() {
+        guard oneShotLayer != nil else { return }
+        oneShotTimer?.invalidate(); oneShotTimer = nil
+        oneShotLayer = nil
+    }
+
+    private func binding(for b: Button) -> ButtonBinding? {
         let idx = effectiveLayer
         guard idx < config.layers.count else { return nil }
         let layer = config.layers[idx]
@@ -62,10 +103,33 @@ final class Engine {
 
     func handle(_ button: Button, pressed: Bool) {
         guard let st = states[button] else { return }
-        guard let bind = binding(for: button) else { return }
+
+        let bind: ButtonBinding
+        if pressed {
+            guard let resolved = binding(for: button) else {
+                // An unbound button still spends a pending leader, otherwise it
+                // would linger and fire on some later, unrelated press.
+                consumeOneShot()
+                onLayerChange?()
+                return
+            }
+            bind = resolved
+            st.activeBinding = resolved
+            let wasArmed = isLeaderArmed
+            consumeOneShot()
+            if wasArmed { onLayerChange?() }
+        } else {
+            guard let stored = st.activeBinding else { return }
+            bind = stored
+        }
 
         if let held = bind.whileHeld {
-            pressed ? beginWhileHeld(button, st, held) : endWhileHeld(button, st)
+            if pressed {
+                playKeySound(bind.sound)
+                beginWhileHeld(button, st, held)
+            } else {
+                endWhileHeld(button, st)
+            }
             return
         }
 
@@ -88,15 +152,15 @@ final class Engine {
         }
     }
 
-    private func resolveTaps(_ button: Button, _ st: ButtonState, _ bind: Binding) {
+    private func resolveTaps(_ button: Button, _ st: ButtonState, _ bind: ButtonBinding) {
         let n = st.tapCount
         st.tapCount = 0
         st.resolveTimer?.invalidate(); st.resolveTimer = nil
         guard n > 0, let action = bind.action(forTaps: n) else { return }
-        perform(action, from: button, state: st)
+        perform(action, from: button, state: st, sound: bind.sound)
     }
 
-    private func scheduleHolds(_ button: Button, _ st: ButtonState, _ bind: Binding) {
+    private func scheduleHolds(_ button: Button, _ st: ButtonState, _ bind: ButtonBinding) {
         let stages: [(TimeInterval, String?)] = [
             (config.s.holdThreshold,  bind.hold),
             (config.s.hold2Threshold, bind.hold2),
@@ -107,7 +171,7 @@ final class Engine {
                 st.holdFired = true
                 st.tapCount = 0
                 st.repeatTimer?.invalidate(); st.repeatTimer = nil
-                self?.perform(action, from: button, state: st)
+                self?.perform(action, from: button, state: st, sound: bind.sound)
             }
             st.holdTimers.append(t)
         }
@@ -119,7 +183,7 @@ final class Engine {
             guard let self else { return }
             st.repeatTimer = Timer.scheduledTimer(
                 withTimeInterval: self.config.s.repeatInterval, repeats: true) { _ in
-                if let k = KeyStroke.parse(action) { KeySynth.tap(k) }
+                if let k = KeyStroke.parse(action) { Output.tap(k) }
             }
         }
     }
@@ -129,7 +193,7 @@ final class Engine {
     private func beginWhileHeld(_ button: Button, _ st: ButtonState, _ action: String) {
         if action.hasPrefix("layerMomentary:") {
             let spec = String(action.dropFirst("layerMomentary:".count))
-            if let i = resolveLayer(spec) { st.momentaryLayer = i; announceLayer() }
+            if let i = resolveLayer(spec) { st.momentaryLayer = i; announce(.layerChanged) }
             return
         }
         guard let k = KeyStroke.parse(action) else {
@@ -137,7 +201,7 @@ final class Engine {
         }
         if st.heldKey != nil { endWhileHeld(button, st) }
         st.heldKey = k
-        KeySynth.down(k)
+        st.heldTarget = Output.down(k)
         // If the release event never arrives (Bluetooth drop, crash mid-hold) a
         // stuck modifier would wreck every keystroke that follows. Force it up.
         st.heldKeyGuard = Timer.scheduledTimer(
@@ -149,32 +213,65 @@ final class Engine {
 
     private func endWhileHeld(_ button: Button, _ st: ButtonState) {
         st.heldKeyGuard?.invalidate(); st.heldKeyGuard = nil
-        if let k = st.heldKey { KeySynth.up(k); st.heldKey = nil }
-        if st.momentaryLayer != nil { st.momentaryLayer = nil; announceLayer() }
+        if let k = st.heldKey { Output.up(k, to: st.heldTarget); st.heldKey = nil; st.heldTarget = nil }
+        if st.momentaryLayer != nil { st.momentaryLayer = nil; announce(.layerChanged) }
     }
 
     // MARK: - Actions
 
-    private func perform(_ action: String, from button: Button, state st: ButtonState) {
+    private func playKeySound(_ name: String?) {
+        guard let name, config.s.soundOnLayer else { return }
+        Sounds.play(name)
+    }
+
+    private func perform(_ action: String, from button: Button, state st: ButtonState,
+                         sound: String? = nil) {
         if action == "none" { return }
+        playKeySound(sound)
+
+        if action.hasPrefix("target:") {
+            let spec = String(action.dropFirst("target:".count))
+            if let handler = onTargetAction { handler(spec) }
+            else { log("target:\(spec) ignored — multi-Mac relay is off") }
+            return
+        }
+
+        if action.hasPrefix("layerOneShot:") {
+            let spec = String(action.dropFirst("layerOneShot:".count))
+            guard let i = resolveLayer(spec) else { log("unknown layer \"\(spec)\""); return }
+            armOneShot(i)
+            return
+        }
 
         if action.hasPrefix("layer:") {
             let spec = String(action.dropFirst("layer:".count))
             switch spec {
-            case "next": layerIndex = (layerIndex + 1) % max(config.layers.count, 1)
-            case "prev": layerIndex = (layerIndex - 1 + config.layers.count) % max(config.layers.count, 1)
+            case "next": layerIndex = step(from: layerIndex, by: 1)
+            case "prev": layerIndex = step(from: layerIndex, by: -1)
             default:
                 guard let i = resolveLayer(spec) else { log("unknown layer \"\(spec)\""); return }
                 layerIndex = i
             }
-            announceLayer()
+            announce(.layerChanged)
             return
         }
 
         guard let k = KeyStroke.parse(action) else {
             log("cannot parse action \"\(action)\" on \(button.rawValue)"); return
         }
-        KeySynth.tap(k)
+        Output.tap(k)
+    }
+
+    /// Walks to the next layer that cycling is allowed to land on.
+    private func step(from: Int, by delta: Int) -> Int {
+        let n = config.layers.count
+        guard n > 0 else { return 0 }
+        var i = from
+        for _ in 0..<n {
+            i = ((i + delta) % n + n) % n
+            if config.layers[i].skipInCycle != true { return i }
+        }
+        return from
     }
 
     private func resolveLayer(_ spec: String) -> Int? {
@@ -182,22 +279,31 @@ final class Engine {
         return config.layers.firstIndex { $0.name == spec }
     }
 
-    private func announceLayer() {
-        let name = currentLayerName
-        log("layer -> \(name)")
+    /// What just happened, so each event gets its own sound. Keying sounds off
+    /// the layer number made "armed" and "expired" indistinguishable.
+    private enum Cue { case leaderArmed, leaderExpired, layerChanged }
+
+    private func announce(_ cue: Cue) {
+        log("layer -> \(currentLayerName)")
+        onLayerChange?()
         guard config.s.soundOnLayer else { return }
-        // Distinct pitch per layer so you can tell where you are without looking.
-        let sounds = ["Tink", "Pop", "Morse", "Bottle", "Frog"]
-        NSSound(named: sounds[effectiveLayer % sounds.count])?.play()
+        switch cue {
+        case .leaderArmed:   Sounds.play(config.s.armedSound)
+        case .leaderExpired: Sounds.play(config.s.expiredSound)
+        case .layerChanged:  Sounds.play(config.s.switchSound)
+        }
     }
 
     // MARK: - Teardown
 
     func releaseEverything() {
+        oneShotTimer?.invalidate(); oneShotTimer = nil
+        oneShotLayer = nil
         for (_, st) in states {
+            st.activeBinding = nil
             st.cancelTimers()
             st.heldKeyGuard?.invalidate(); st.heldKeyGuard = nil
-            if let k = st.heldKey { KeySynth.up(k); st.heldKey = nil }
+            if let k = st.heldKey { Output.up(k, to: st.heldTarget); st.heldKey = nil; st.heldTarget = nil }
             st.momentaryLayer = nil
             st.tapCount = 0
         }
