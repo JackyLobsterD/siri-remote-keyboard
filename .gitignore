@@ -1,0 +1,11 @@
+# Local-only: product notes, roadmap, anything not meant to be published.
+private/
+
+# Build output
+bin/
+SiriRemoted.app/
+probe/hidprobe
+probe/seizetest
+*.dSYM/
+
+.DS_Store
