@@ -95,6 +95,14 @@ The menu bar icon → **设置…** opens a window with three tabs:
   into `~/Library/Sounds`).
 - **多电脑** — multi-Mac relay, below.
 
+Combos are sent the way a keyboard sends them: each modifier key goes down as its
+own event before the key. Apps that track physical key state — Wispr stores its
+shortcuts as keycode lists — ignore a single key event that merely carries modifier
+flags.
+
+The three gun sounds in `sounds/` (CC0, see `sounds/SOURCES.md`) are bundled into
+the app, so a sound chosen on one Mac exists on every Mac the remote can drive.
+
 Saving from the window rewrites the config as plain JSON, so hand-written comments
 are lost; hand edits to the file still hot-reload.
 
@@ -127,6 +135,9 @@ or `"target:<name>"` — and the host speaks the name of the Mac it switched to.
 - A key held on a receiver (push-to-talk) is released if the connection drops, if
   the host goes quiet for 6s, or when the host switches away.
 - Receivers need only Accessibility; they never read the remote.
+- **Feedback follows the target.** Sounds, the spoken layer or Mac name, the layer
+  HUD and the menu-bar layer badge all happen on the Mac being driven, not on the
+  host — a HUD on a screen you aren't looking at is no feedback.
 
 Set up on each Mac under 设置 › 多电脑: pick a role, a short name, and the same
 passcode everywhere. Built on another Mac, the app is not signed by an identity that
@@ -160,7 +171,8 @@ volDown siri`
 Gestures: `tap` `double` `triple` `hold` `hold2` `whileHeld`, plus `"repeat": true`
 for auto-repeat while held.
 
-Actions: any keystroke (`"ctrl+tab"`, `"cmd+shift+p"`, `"pageup"`), `"layer:next"`,
+Actions: any keystroke (`"ctrl+tab"`, `"cmd+shift+p"`, `"pageup"`), or several in a
+row separated by spaces (`"ctrl+e ctrl+u"`), `"layer:next"`,
 `"layer:prev"`, `"layer:<n|name>"`, `"layerMomentary:<n|name>"`, or `"none"`.
 
 A tap fires immediately unless the button also defines `double` or `triple`, in which

@@ -127,7 +127,7 @@ struct SettingsView: View {
                     let bind = store.binding(layer: layerIndex, button: b)
 
                     if bind.whileHeld != nil {
-                        Label("「按住不放」已设置，下面的单击 / 双击 / 长按都不会生效。",
+                        Label("「按住不放」已设置：长按两档不生效；单击/双击/三击仍可用，但按下后要等一小会儿才会判定为按住。",
                               systemImage: "exclamationmark.triangle.fill")
                             .font(.callout)
                             .foregroundStyle(.orange)
@@ -230,10 +230,33 @@ struct SettingsView: View {
                 ))
                 soundRow("leader 上膛", \.leaderArmedSound, "Tink")
                 soundRow("leader 过期", \.leaderExpiredSound, "Purr")
+                Toggle("切换 layer 时念出层名（代替提示音）", isOn: Binding(
+                    get: { store.config.settings?.speakLayerName ?? true },
+                    set: {
+                        if store.config.settings == nil { store.config.settings = Settings() }
+                        store.config.settings?.speakLayerName = $0
+                        store.save()
+                    }
+                ))
                 soundRow("切换 layer", \.layerSwitchSound, "Morse")
                 Text("选中即试听。上膛和过期最好选两个听起来明显不同的，一耳朵就能分辨。")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
             } header: { Text("声音") }
+
+            Section {
+                Toggle("切换 layer 时在屏幕上显示层名", isOn: Binding(
+                    get: { store.config.settings?.showLayerHUD ?? true },
+                    set: {
+                        if store.config.settings == nil { store.config.settings = Settings() }
+                        store.config.settings?.showLayerHUD = $0
+                        store.save()
+                    }
+                ))
+                Text("菜单栏图标旁边会一直显示当前层名 —— 只在不是第一层时显示，没有字就是第一层。")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                msRow("按住判定延迟", \.whileHeldDelayMs, 180, 80...400,
+                      "同一个键既要「按住不放」又要单击/双击时（比如语音键），按下超过这个时间才算按住。越短越跟手，但越容易把快速点按误判成按住。")
+            } header: { Text("反馈与判定") }
 
             Section {
                 Text("配置文件：\(Config.path)")

@@ -93,8 +93,21 @@ enum Sounds {
     /// UI sounds longer than this are tones and jingles, not feedback cues.
     private static let maxUIDuration = 1.0
 
+    /// Sounds shipped inside the app (repo `sounds/`), so a sound chosen on one
+    /// Mac exists on every Mac the remote can drive.
+    private static let bundleDir = Bundle.main.resourceURL?.appendingPathComponent("Sounds").path
+
     static let groups: [(title: String, options: [SoundOption])] = {
         var out: [(String, [SoundOption])] = []
+
+        if let dir = bundleDir {
+            let bundled = files(in: dir).map { f -> SoundOption in
+                let path = "\(dir)/\(f)"
+                return SoundOption(id: "app:\(f)", name: (f as NSString).deletingPathExtension,
+                                   category: "内置音效", path: path, duration: duration(path))
+            }
+            if !bundled.isEmpty { out.append(("内置音效", bundled.sorted { $0.name < $1.name })) }
+        }
 
         let alerts = files(in: alertDir).map { f -> SoundOption in
             let name = (f as NSString).deletingPathExtension
@@ -151,7 +164,10 @@ enum Sounds {
 
     static func play(_ id: String) {
         guard id != "none" else { return }
-        let path = option(id)?.path ?? "\(alertDir)/\(id).aiff"
+        guard let path = option(id)?.path ?? (id.contains(":") ? nil : "\(alertDir)/\(id).aiff") else {
+            Log.write("sound \(id) not found on this Mac")
+            return
+        }
         let sound: NSSound
         if let cached = cache[path] { sound = cached }
         else {

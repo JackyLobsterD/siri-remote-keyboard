@@ -80,7 +80,7 @@ enum RelayCrypto {
 
 /// One line of newline-delimited JSON.
 struct RelayMessage: Codable {
-    var t: String            // hello | down | up | tap | releaseAll | ping
+    var t: String            // hello | down | up | tap | releaseAll | ping | announce | sound | hud | badge
     var code: UInt16?
     var flags: UInt64?
     var name: String?
@@ -122,8 +122,12 @@ final class Announcer {
 final class RelayReceiver {
     private var listener: NWListener?
     private var sessions: [ReceiverSession] = []
+    private let announcer = Announcer()
+    private let hud = LayerHUD()
     let status: RelayStatus
     var onChange: (() -> Void)?
+    /// The host's current layer, for this Mac's menu bar while it is the target.
+    var onBadge: ((String) -> Void)?
 
     init(status: RelayStatus) { self.status = status }
 
@@ -154,9 +158,11 @@ final class RelayReceiver {
     }
 
     private func accept(_ c: NWConnection) {
-        let s = ReceiverSession(conn: c)
+        let s = ReceiverSession(conn: c, announcer: announcer, hud: hud)
+        s.onBadge = { [weak self] text in self?.onBadge?(text) }
         s.onClose = { [weak self, weak s] in
             self?.sessions.removeAll { $0 === s }
+            self?.onBadge?("")
             self?.publish()
         }
         s.onReady = { [weak self] in self?.publish() }
@@ -180,6 +186,9 @@ final class RelayReceiver {
 
 final class ReceiverSession {
     let conn: NWConnection
+    private let announcer: Announcer
+    private let hud: LayerHUD
+    var onBadge: ((String) -> Void)?
     private var buffer = Data()
     private var held: [KeyStroke] = []
     private var lastSeen = Date()
@@ -189,7 +198,11 @@ final class ReceiverSession {
     var onClose: (() -> Void)?
     var onReady: (() -> Void)?
 
-    init(conn: NWConnection) { self.conn = conn }
+    init(conn: NWConnection, announcer: Announcer, hud: LayerHUD) {
+        self.conn = conn
+        self.announcer = announcer
+        self.hud = hud
+    }
 
     func start() {
         conn.stateUpdateHandler = { [weak self] state in
@@ -251,6 +264,10 @@ final class ReceiverSession {
         case "tap":        if let k { KeySynth.tap(k) }
         case "releaseAll": releaseAll()
         case "hello":      Log.write("relay: hello from \(m.name ?? "?")")
+        case "announce":   if let text = m.name { announcer.say(text) }
+        case "sound":      if let id = m.name { Sounds.play(id) }
+        case "hud":        if let text = m.name { hud.show(text) }
+        case "badge":      onBadge?(m.name ?? "")
         default: break
         }
     }
@@ -398,6 +415,13 @@ final class RelayHost {
     /// Where keys go right now; nil = this Mac.
     private(set) var current: String?
 
+    /// Current layer name for a target's menu bar, or "" on the default layer.
+    var badgeText: () -> String = { "" }
+
+    func sendBadge() {
+        if let c = current { peers[c]?.send(RelayMessage(t: "badge", name: badgeText())) }
+    }
+
     init(status: RelayStatus, announcer: Announcer) {
         self.status = status
         self.announcer = announcer
@@ -468,10 +492,21 @@ final class RelayHost {
             next = spec
         }
         // Nothing may stay pressed on the Mac we're leaving.
-        if let old = current, old != next { peers[old]?.send(RelayMessage(t: "releaseAll")) }
+        if let old = current, old != next {
+            peers[old]?.send(RelayMessage(t: "releaseAll"))
+            peers[old]?.send(RelayMessage(t: "badge", name: ""))
+        }
         current = next
         Log.write("relay: target -> \(next ?? "this Mac")")
-        announcer.say(next ?? "本机")
+        // The Mac you switched to says its own name, so the voice comes from the
+        // machine you're now driving rather than from the host. The host's sound
+        // switch still governs it.
+        if let n = next {
+            if announcer.enabled() { peers[n]?.send(RelayMessage(t: "announce", name: n)) }
+            peers[n]?.send(RelayMessage(t: "badge", name: badgeText()))
+        } else {
+            announcer.say(RelaySettings.name)
+        }
         publish()
     }
 

@@ -84,17 +84,47 @@ struct KeyStroke: Equatable {
 enum KeySynth {
     private static let source = CGEventSource(stateID: .hidSystemState)
 
-    static func down(_ k: KeyStroke) {
-        guard let e = CGEvent(keyboardEventSource: source, virtualKey: k.code, keyDown: true) else { return }
-        e.flags = k.flags.union(selfFlag[k.code] ?? [])
+    /// Modifier flag -> the physical key that sets it, in press order.
+    private static let modifierKeys: [(CGEventFlags, CGKeyCode)] = [
+        (.maskCommand, 55), (.maskControl, 59), (.maskAlternate, 58),
+        (.maskShift, 56), (.maskSecondaryFn, 63),
+    ]
+
+    private static func post(_ code: CGKeyCode, down: Bool, flags: CGEventFlags) {
+        guard let e = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: down) else { return }
+        e.flags = flags
         e.post(tap: .cghidEventTap)
     }
 
+    /// The modifier keys a combo needs pressed, excluding the key itself when it
+    /// is a modifier (holding right Option needs no separate Option press).
+    private static func modifiers(of k: KeyStroke) -> [(CGEventFlags, CGKeyCode)] {
+        modifierKeys.filter { k.flags.contains($0.0) && $0.1 != k.code }
+    }
+
+    // Combos are pressed the way a keyboard does it: each modifier key goes down
+    // as its own event, then the key, then everything comes up in reverse. Just
+    // tagging one key event with modifier flags is not enough for apps that track
+    // physical key state — Wispr's shortcuts are stored as keycode lists
+    // ("55+59+9" = Cmd, Ctrl, V) and ignored a flag-only Cmd+Ctrl+V.
+
+    static func down(_ k: KeyStroke) {
+        var held: CGEventFlags = []
+        for (flag, code) in modifiers(of: k) {
+            held.insert(flag)
+            post(code, down: true, flags: held)
+        }
+        post(k.code, down: true, flags: k.flags.union(selfFlag[k.code] ?? []))
+    }
+
     static func up(_ k: KeyStroke) {
-        guard let e = CGEvent(keyboardEventSource: source, virtualKey: k.code, keyDown: false) else { return }
         // Releasing a modifier must clear its own flag, or the OS keeps thinking it is down.
-        e.flags = k.flags.subtracting(selfFlag[k.code] ?? [])
-        e.post(tap: .cghidEventTap)
+        post(k.code, down: false, flags: k.flags.subtracting(selfFlag[k.code] ?? []))
+        var held = k.flags
+        for (flag, code) in modifiers(of: k).reversed() {
+            held.remove(flag)
+            post(code, down: false, flags: held)
+        }
     }
 
     static func tap(_ k: KeyStroke) { down(k); up(k) }

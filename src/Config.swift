@@ -76,6 +76,13 @@ struct Settings: Decodable {
     var leaderArmedSound: String?
     var leaderExpiredSound: String?
     var layerSwitchSound: String?
+    /// For a whileHeld button that also has tap actions: how long a press must
+    /// last before it counts as a hold rather than the start of a tap.
+    var whileHeldDelayMs: Int?
+    /// Say the layer's name on switching, instead of playing layerSwitchSound.
+    var speakLayerName: Bool?
+    /// Flash the layer's name on screen when it changes.
+    var showLayerHUD: Bool?
 
     var doubleTapWindow: TimeInterval { Double(doubleTapWindowMs ?? 280) / 1000 }
     var holdThreshold:   TimeInterval { Double(holdThresholdMs ?? 350) / 1000 }
@@ -88,6 +95,9 @@ struct Settings: Decodable {
     var armedSound:      String       { leaderArmedSound ?? "Tink" }
     var expiredSound:    String       { leaderExpiredSound ?? "Purr" }
     var switchSound:     String       { layerSwitchSound ?? "Morse" }
+    var whileHeldDelay:  TimeInterval { Double(whileHeldDelayMs ?? 180) / 1000 }
+    var speakLayer:      Bool         { speakLayerName ?? true }
+    var layerHUD:        Bool         { showLayerHUD ?? true }
 }
 
 struct Config: Decodable {

@@ -54,6 +54,7 @@ extension Settings: Encodable {
         case doubleTapWindowMs, holdThresholdMs, hold2ThresholdMs
         case repeatDelayMs, repeatIntervalMs, layerChangeSound, maxHeldKeySeconds
         case oneShotTimeoutMs, leaderArmedSound, leaderExpiredSound, layerSwitchSound
+        case whileHeldDelayMs, speakLayerName, showLayerHUD
     }
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: SKeys.self)
@@ -68,6 +69,9 @@ extension Settings: Encodable {
         try c.encodeIfPresent(leaderArmedSound, forKey: .leaderArmedSound)
         try c.encodeIfPresent(leaderExpiredSound, forKey: .leaderExpiredSound)
         try c.encodeIfPresent(layerSwitchSound, forKey: .layerSwitchSound)
+        try c.encodeIfPresent(whileHeldDelayMs, forKey: .whileHeldDelayMs)
+        try c.encodeIfPresent(speakLayerName, forKey: .speakLayerName)
+        try c.encodeIfPresent(showLayerHUD, forKey: .showLayerHUD)
     }
 }
 

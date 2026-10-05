@@ -12,6 +12,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var permissionsWindow: NSWindow?
     private let permissions = PermissionModel()
     private let relayStatus = RelayStatus()
+    private let announcer = Announcer()
+    private let hud = LayerHUD()
+    /// On a receiver: the host's layer, while this Mac is the target.
+    private var receiverBadge = ""
     private var relayHost: RelayHost?
     private var relayReceiver: RelayReceiver?
 
@@ -98,6 +102,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // A receiver has no remote of its own; it only types what a host sends.
             let rx = RelayReceiver(status: relayStatus)
             rx.onChange = { [weak self] in self?.refreshMenu() }
+            rx.onBadge = { [weak self] text in
+                self?.receiverBadge = text
+                self?.refreshMenu()
+            }
             relayReceiver = rx
             rx.start()
             refreshMenu()
@@ -109,14 +117,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.async { self?.syncStoreFromDisk(); self?.refreshMenu() }
         }
         self.service = svc
+        announcer.enabled = { [weak svc] in svc?.engine.soundsEnabled ?? true }
+        Feedback.announcer = announcer
+        Feedback.hud = hud
+        svc.engine.onLayerSwitched = { [weak self, weak svc] name in
+            guard let e = svc?.engine else { return }
+            if e.speakLayerName { Feedback.speak(name) }
+            if e.showLayerHUD { Feedback.showHUD(name) }
+            self?.relayHost?.sendBadge()
+        }
         _ = svc.start()
 
         if RelaySettings.role == .host {
-            let announcer = Announcer()
-            announcer.enabled = { [weak svc] in svc?.engine.soundsEnabled ?? true }
             let host = RelayHost(status: relayStatus, announcer: announcer)
             host.onChange = { [weak self] in self?.refreshMenu() }
             svc.engine.onTargetAction = { [weak host] spec in host?.select(spec) }
+            host.badgeText = { [weak svc] in
+                guard let e = svc?.engine, !e.isOnBaseLayer else { return "" }
+                return e.persistentLayerName
+            }
             Output.host = host
             relayHost = host
             host.start()
@@ -149,6 +168,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func refreshMenu() {
+        if let e = service?.engine, service?.paused == false, !e.isOnBaseLayer {
+            statusItem.button?.title = " \(e.persistentLayerName)"
+        } else if RelaySettings.role == .receiver, !receiverBadge.isEmpty {
+            statusItem.button?.title = " \(receiverBadge)"
+        } else {
+            statusItem.button?.title = ""
+        }
+        statusItem.button?.imagePosition = .imageLeading
+
         let menu = NSMenu()
 
         let statusLine: String

@@ -13,6 +13,7 @@ private final class ButtonState {
     var heldKeyGuard: Timer?
     var momentaryLayer: Int?
     var activeBinding: ButtonBinding?
+    var pressedAt = Date.distantPast
 
     func cancelTimers() {
         resolveTimer?.invalidate(); resolveTimer = nil
@@ -34,6 +35,18 @@ final class Engine {
     var onTargetAction: ((String) -> Void)?
 
     var soundsEnabled: Bool { config.s.soundOnLayer }
+    var speakLayerName: Bool { config.s.soundOnLayer && config.s.speakLayer }
+    var showLayerHUD: Bool { config.s.layerHUD }
+
+    /// Called with the new layer's name whenever the layer changes, so the app
+    /// can speak it and flash it — the remote has no light to show it on.
+    var onLayerSwitched: ((String) -> Void)?
+
+    /// The layer you're parked on (ignores a transient leader).
+    var isOnBaseLayer: Bool { layerIndex == 0 }
+    var persistentLayerName: String {
+        layerIndex < config.layers.count ? config.layers[layerIndex].name : "?"
+    }
 
     /// A one-shot ("leader") layer: armed by one button, consumed by the next
     /// press, and dropped if nothing follows in time. Unlike a momentary layer
@@ -104,8 +117,16 @@ final class Engine {
     func handle(_ button: Button, pressed: Bool) {
         guard let st = states[button] else { return }
 
+        if pressed { flushPendingTaps(except: button) }
+
         let bind: ButtonBinding
-        if pressed {
+        if pressed, st.resolveTimer != nil, let ongoing = st.activeBinding {
+            // A later press of a multi-tap already in progress. It must resolve in
+            // the layer the sequence started in: after TV (leader) → back, the
+            // leader is spent, and re-resolving the second back press would land
+            // in the edit layer and lose the double tap.
+            bind = ongoing
+        } else if pressed {
             guard let resolved = binding(for: button) else {
                 // An unbound button still spends a pending leader, otherwise it
                 // would linger and fire on some later, unrelated press.
@@ -124,11 +145,53 @@ final class Engine {
         }
 
         if let held = bind.whileHeld {
+            let hasTaps = bind.tap != nil || bind.double != nil || bind.triple != nil
+            guard hasTaps else {
+                // Pure hold: press it now, no waiting.
+                if pressed {
+                    playKeySound(bind.sound)
+                    beginWhileHeld(button, st, held)
+                } else {
+                    endWhileHeld(button, st)
+                }
+                return
+            }
+            // Hold *and* taps on one button (the Siri key: hold to talk, double
+            // to paste). Sending the held key on press would turn a double tap
+            // into two quick push-to-talk taps — which Wispr reads as "lock
+            // hands-free". So a press only becomes a hold after whileHeldDelay.
             if pressed {
-                playKeySound(bind.sound)
-                beginWhileHeld(button, st, held)
+                st.pressedAt = Date()
+                st.resolveTimer?.invalidate(); st.resolveTimer = nil
+                st.holdFired = false
+                let t = Timer.scheduledTimer(withTimeInterval: config.s.whileHeldDelay,
+                                             repeats: false) { [weak self] _ in
+                    guard let self else { return }
+                    st.holdFired = true
+                    st.tapCount = 0
+                    self.playKeySound(bind.sound)
+                    self.beginWhileHeld(button, st, held)
+                }
+                st.holdTimers.append(t)
             } else {
-                endWhileHeld(button, st)
+                st.holdTimers.forEach { $0.invalidate() }; st.holdTimers = []
+                let ms = Int(Date().timeIntervalSince(st.pressedAt) * 1000)
+                log("\(button.rawValue): pressed \(ms)ms → \(st.holdFired ? "hold" : "tap") "
+                    + "(threshold \(Int(config.s.whileHeldDelay * 1000))ms)")
+                if st.holdFired {
+                    st.holdFired = false
+                    endWhileHeld(button, st)
+                    return
+                }
+                st.tapCount += 1
+                if st.tapCount < bind.maxTaps {
+                    st.resolveTimer = Timer.scheduledTimer(
+                        withTimeInterval: config.s.doubleTapWindow, repeats: false) { [weak self] _ in
+                        self?.resolveTaps(button, st, bind)
+                    }
+                } else {
+                    resolveTaps(button, st, bind)
+                }
             }
             return
         }
@@ -152,11 +215,28 @@ final class Engine {
         }
     }
 
+    /// A keystroke, or several separated by spaces ("ctrl+e ctrl+u"), tapped in
+    /// order. Returns false if any part doesn't parse; nothing is sent then.
+    private func tapKeys(_ action: String) -> Bool {
+        let keys = action.split(separator: " ").compactMap { KeyStroke.parse(String($0)) }
+        guard !keys.isEmpty, keys.count == action.split(separator: " ").count else { return false }
+        keys.forEach(Output.tap)
+        return true
+    }
+
+    private func flushPendingTaps(except pressed: Button) {
+        for (b, st) in states where b != pressed && st.resolveTimer != nil {
+            guard let bind = st.activeBinding else { continue }
+            resolveTaps(b, st, bind)
+        }
+    }
+
     private func resolveTaps(_ button: Button, _ st: ButtonState, _ bind: ButtonBinding) {
         let n = st.tapCount
         st.tapCount = 0
         st.resolveTimer?.invalidate(); st.resolveTimer = nil
         guard n > 0, let action = bind.action(forTaps: n) else { return }
+        log("\(button.rawValue) ×\(n) → \(action)")
         perform(action, from: button, state: st, sound: bind.sound)
     }
 
@@ -183,7 +263,7 @@ final class Engine {
             guard let self else { return }
             st.repeatTimer = Timer.scheduledTimer(
                 withTimeInterval: self.config.s.repeatInterval, repeats: true) { _ in
-                if let k = KeyStroke.parse(action) { Output.tap(k) }
+                _ = self.tapKeys(action)
             }
         }
     }
@@ -221,7 +301,7 @@ final class Engine {
 
     private func playKeySound(_ name: String?) {
         guard let name, config.s.soundOnLayer else { return }
-        Sounds.play(name)
+        Feedback.sound(name)
     }
 
     private func perform(_ action: String, from button: Button, state st: ButtonState,
@@ -256,10 +336,7 @@ final class Engine {
             return
         }
 
-        guard let k = KeyStroke.parse(action) else {
-            log("cannot parse action \"\(action)\" on \(button.rawValue)"); return
-        }
-        Output.tap(k)
+        if !tapKeys(action) { log("cannot parse action \"\(action)\" on \(button.rawValue)") }
     }
 
     /// Walks to the next layer that cycling is allowed to land on.
@@ -286,11 +363,13 @@ final class Engine {
     private func announce(_ cue: Cue) {
         log("layer -> \(currentLayerName)")
         onLayerChange?()
+        if case .layerChanged = cue { onLayerSwitched?(currentLayerName) }
         guard config.s.soundOnLayer else { return }
         switch cue {
-        case .leaderArmed:   Sounds.play(config.s.armedSound)
-        case .leaderExpired: Sounds.play(config.s.expiredSound)
-        case .layerChanged:  Sounds.play(config.s.switchSound)
+        case .leaderArmed:   Feedback.sound(config.s.armedSound)
+        case .leaderExpired: Feedback.sound(config.s.expiredSound)
+        case .layerChanged:
+            if !speakLayerName { Feedback.sound(config.s.switchSound) }
         }
     }
 

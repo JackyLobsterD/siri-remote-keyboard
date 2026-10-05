@@ -13,6 +13,8 @@ APP="build/SiriRemoted.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS"
 cp bin/siriremoted "$APP/Contents/MacOS/siriremoted"
+mkdir -p "$APP/Contents/Resources/Sounds"
+cp sounds/*.wav "$APP/Contents/Resources/Sounds/"
 
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
